@@ -1,0 +1,22 @@
+# ConsoCI — base de données locale.
+# L'application Next.js est le seul serveur : elle expose les pages et les
+# Server Actions. PostgreSQL reste le support de persistance.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: conso
+      POSTGRES_PASSWORD: conso
+      POSTGRES_DB: conso_ci
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conso -d conso_ci"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

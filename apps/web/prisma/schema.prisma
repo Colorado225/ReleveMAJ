@@ -1,0 +1,551 @@
+// ConsoCI — schéma de données (flow.md §24, §25, §26, §27, §50)
+// Aucune donnée réglementaire n'est écrite « en dur » dans le front (§16, §50).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Nécessaire pour Neon (et tout pooler de type PgBouncer) : la CLI Prisma
+  // (migrate, db push, db seed) a besoin d'une connexion DIRECTE, alors que
+  // l'application doit passer par le pool. Sans `directUrl`, Prisma exécuterait
+  // `db push` contre le pooler, qui ne supporte pas les transactions longues.
+  //
+  // ⚠ SÉCURITÉ : `tests/setup.ts` doit rediriger DIRECT_URL vers le schéma de
+  // test, sinon `db push --accept-data-loss` viserait la base de développement.
+  directUrl = env("DIRECT_URL")
+}
+
+enum Provider {
+  CIE
+  SODECI
+}
+
+enum UtilityType {
+  ELECTRICITY
+  WATER
+}
+
+enum PaymentMode {
+  PREPAID
+  POSTPAID
+  UNKNOWN
+}
+
+enum MeterType {
+  INDEX
+  CREDIT
+  SMART
+}
+
+enum Unit {
+  KWH
+  M3
+  FCFA
+  UNKNOWN
+}
+
+enum ReadingType {
+  INDEX
+  CREDIT
+  ENERGY_AVAILABLE
+  UNKNOWN
+}
+
+// flow.md §27 — traçabilité de chaque donnée
+enum DataSource {
+  MANUAL
+  PHOTO
+  OCR
+  IMPORT
+  SYSTEM
+}
+
+enum Confidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// flow.md §51 — statut d'affichage d'une valeur
+enum ValueStatus {
+  REAL
+  ESTIMATE
+  FORECAST
+  USER_ENTERED
+  UNKNOWN
+  CALCULATED
+}
+
+enum PaymentMethod {
+  ORANGE_MONEY
+  MTN_MOMO
+  MOOV_MONEY
+  WAVE
+  CASH
+  OTHER
+}
+
+// flow.md §40 — isolation par utilisateur / organisation
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// flow.md §57 — palier d'abonnement
+enum Plan {
+  FREE
+  PREMIUM
+}
+
+// flow.md §57 — une extraction OCR ne devient une donnée qu'APRÈS
+// confirmation humaine. Le statut rend cette étape obligatoire et explicite.
+enum ExtractionStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+// ---------- Identité ----------
+
+model User {
+  id           String   @id @default(cuid())
+  phone        String   @unique
+  firstName    String?
+  lastName     String?
+  // flow.md §47 — le palier n'est jamais imposé avant d'avoir compris la valeur
+  plan         Plan     @default(FREE)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organizations OrganizationMember[]
+  properties    Property[]
+  sessions      Session[]
+  auditLogs     AuditLog[]
+  productEvents ProductEvent[]
+  // flow.md §40 — chaque donnée dérivée appartient à un seul compte
+  forecasts         Forecast[]
+  alerts            Alert[]
+  recommendations   Recommendation[]
+  savingsEvents     SavingsEvent[]
+  /** flow.md §57 — propositions de reçu en attente de confirmation */
+  draftExtractions  DraftExtraction[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  members    OrganizationMember[]
+  properties Property[]
+}
+
+// flow.md §40 — RBAC
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+// flow.md §40 — refresh token rotation.
+// On ne stocke JAMAIS le jeton en clair : uniquement son hash SHA-256.
+// Chaque rafraîchissement RÉVOQUE le jeton utilisé et en émet un nouveau.
+// Si un jeton déjà révoqué est réutilisé, on considère qu'il a été volé et on
+// révoque toutes les sessions de l'utilisateur (détection de réutilisation).
+model Session {
+  id               String   @id @default(cuid())
+  userId           String
+  refreshTokenHash String   @unique
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  /** contexte de connexion, utile en cas d'incident */
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+model OtpChallenge {
+  id         String   @id @default(cuid())
+  phone      String
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int      @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([phone])
+  @@index([createdAt])
+}
+
+// flow.md §40 — rate limiting : on borne les demandes par téléphone et par IP
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  count       Int      @default(1)
+  windowStart DateTime @default(now())
+
+  @@index([windowStart])
+}
+// ---------- Logement et compteurs ----------
+
+model Property {
+  id         String   @id @default(cuid())
+  name       String
+  address    String?
+  isAbidjan  Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  meters     Meter[]
+  budgets    Budget[]
+  waterBills WaterBill[]
+  // flow.md §32 — les appareils sont ceux de CE logement
+  appliances Appliance[]
+
+  @@index([userId])
+}
+
+// flow.md §25
+model Meter {
+  id              String      @id @default(cuid())
+  provider        Provider
+  utilityType     UtilityType
+  meterType       MeterType   @default(INDEX)
+  paymentMode     PaymentMode @default(UNKNOWN)
+  subscribedPower Float?
+  meterNumber     String?
+  unit            Unit        @default(UNKNOWN)
+  label           String?
+  active          Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  readings             MeterReading[]
+  consumptionPeriods   ConsumptionPeriod[]
+  electricityPurchases ElectricityPurchase[]
+  waterBills           WaterBill[]
+  /** flow.md §57 — propositions issues d'une photo de reçu */
+  draftExtractions     DraftExtraction[]
+
+  @@index([propertyId])
+}
+
+// flow.md §26 — une valeur de compteur n'est jamais interprétée automatiquement (§10)
+model MeterReading {
+  id          String      @id @default(cuid())
+  value       Float
+  unit        Unit
+  readingType ReadingType
+  readingDate DateTime    @default(now())
+  source      DataSource  @default(MANUAL)
+  confidence  Confidence  @default(HIGH)
+  note        String?
+  createdAt   DateTime    @default(now())
+
+  meterId String
+  meter   Meter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+
+  @@index([meterId, readingDate])
+}
+
+model ConsumptionPeriod {
+  id           String   @id @default(cuid())
+  startDate    DateTime
+  endDate      DateTime
+  startValue   Float
+  endValue     Float
+  quantity     Float
+  dailyAverage Float
+  // flow.md §21 — index régressif conservé et signalé, jamais supprimé
+  anomaly      Boolean  @default(false)
+  anomalyNote  String?
+  createdAt    DateTime @default(now())
+
+  meterId String
+  meter   Meter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+
+  @@index([meterId, endDate])
+}
+
+// flow.md §11 — le modèle principal de l'électricité prépayée CIE
+model ElectricityPurchase {
+  id                  String        @id @default(cuid())
+  amountPaid          Float
+  energyCreditedKwh   Float?
+  estimatedEnergyKwh  Float?
+  costPerKwh          Float?
+  paymentMethod       PaymentMethod @default(OTHER)
+  purchasedAt         DateTime      @default(now())
+  // flow.md §12 — on stocke une référence, jamais le token CIE brut
+  tokenReference      String?
+  receiptImagePath    String?
+  source              DataSource    @default(MANUAL)
+  confidence          Confidence    @default(HIGH)
+  createdAt           DateTime      @default(now())
+
+  meterId String
+  meter   Meter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+
+  @@index([meterId, purchasedAt])
+}
+
+// flow.md §22 — la facture SODECI saisie reste la référence financière
+model WaterBill {
+  id           String   @id @default(cuid())
+  periodStart  DateTime
+  periodEnd    DateTime
+  consumptionM3 Float
+  amountTtc    Float
+  invoiceReference String?
+  // flow.md §23 — coût effectif observé, PAS le tarif officiel
+  effectiveCostPerM3 Float?
+  receiptImagePath   String?
+  source       DataSource @default(MANUAL)
+  createdAt    DateTime @default(now())
+
+  meterId String
+  meter   Meter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([meterId, periodEnd])
+}
+
+// ---------- Tarifs versionnés (flow.md §14, §49, §50) ----------
+
+// Une modification de tarif crée une NOUVELLE version : on ne modifie jamais
+// silencieusement une version publiée.
+model TariffScheme {
+  id              String    @id @default(cuid())
+  code            String
+  version         Int       @default(1)
+  provider        Provider
+  category        String
+  subscribedPower Float
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+  sourceUrl       String
+  sourceName      String
+  documentReference String
+  verifiedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  rules TariffRule[]
+
+  @@unique([code, version])
+  @@index([code, effectiveFrom])
+}
+
+model TariffRule {
+  id       String @id @default(cuid())
+  kind     String
+  label    String
+  value    Float
+  unit     String?
+  position Int    @default(0)
+
+  schemeId String
+  scheme   TariffScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+
+  @@index([schemeId])
+}
+
+// flow.md §17 — règles d'éligibilité administrables
+model EligibilityRule {
+  id                String @id @default(cuid())
+  schemeCode        String
+  usageType         String
+  subscribedPower   Float
+  thresholdKwh      Float
+  minimumObservationPeriodDays Int @default(60)
+  sourceUrl         String
+  verifiedAt        DateTime?
+}
+
+// ---------- Budget, projections, alertes ----------
+
+model Budget {
+  id           String   @id @default(cuid())
+  category     String
+  monthlyAmount Float
+  createdAt    DateTime @default(now())
+
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+}
+
+// flow.md §29 — une projection appartient à un utilisateur.
+// flow.md §40 : sans propriétaire, ces tables seraient partagées entre tous les
+// comptes — c'est un défaut d'isolation, pas un simple détail de schéma.
+model Forecast {
+  id              String      @id @default(cuid())
+  horizonDays     Int
+  projectedAmount Float?
+  projectedQuantity Float?
+  dailyAverage    Float
+  status          ValueStatus @default(FORECAST)
+  createdAt       DateTime    @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Alert {
+  id         String        @id @default(cuid())
+  type       String
+  severity   AlertSeverity @default(INFO)
+  title      String
+  body       String
+  actionable Boolean       @default(true)
+  resolvedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, resolvedAt, createdAt])
+}
+
+model Recommendation {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  basis     String
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model SavingsEvent {
+  id          String   @id @default(cuid())
+  label       String
+  amount      Float
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, periodEnd])
+}
+
+// flow.md §32 — appareils, option V1.
+// Un appareil est rattaché à un LOGEMENT : la consommation estimée est celle de
+// ce logement, pas une donnée globale partagée.
+model Appliance {
+  id            String   @id @default(cuid())
+  type          String
+  label         String
+  powerWatts    Float
+  hoursPerDay   Float
+  daysPerMonth  Float    @default(30)
+  createdAt     DateTime @default(now())
+
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, type])
+}
+
+// flow.md §57 — architecture OCR « prévue dès maintenant ».
+//
+// Invariant central : CETTE table ne contient jamais de facture. Elle contient
+// une PROPOSITION en attente de validation. La facture n'est écrite que par
+// `confirmDraftExtraction`, c'est-à-dire après une action explicite de
+// l'utilisateur. Sans confirmation, la donnée n'existe pas : elle n'entre dans
+// aucun calcul, aucune alerte et aucun projection.
+model DraftExtraction {
+  id     String           @id @default(cuid())
+  status ExtractionStatus @default(PENDING)
+  /** WATER_BILL (facture SODECI) ou ELECTRICITY_PURCHASE (reçu CIE) */
+  sourceType String
+  imagePath   String
+  /** texte brut recognized par l'OCR — vide tant que l'OCR V1.1 n'est pas branché */
+  rawText     String?
+  /** valeurs proposées, éventuellement complétées à la main par l'utilisateur */
+  proposedAmountTtc     Float?
+  proposedConsumptionM3 Float?
+  proposedPeriodStart   DateTime?
+  proposedPeriodEnd     DateTime?
+  /** confiance de l'OCR ; null quand la saisie est manuelle */
+  extractionConfidence  String?
+  /** identifiant de l'entité créée à la confirmation (WaterBill, …) */
+  confirmedEntityId String?
+  confirmedAt       DateTime?
+  createdAt         DateTime    @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meterId String
+  meter   Meter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([status])
+}
+
+// flow.md §40 — journal d'audit
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String
+  entity     String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  userId String?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+// flow.md §48 — événements produit. Le nom de l'événement est une liste fermée
+// gérée dans apps/web/lib/analytics.ts pour éviter les valeurs libres.
+model ProductEvent {
+  id        String   @id @default(cuid())
+  event     String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  userId String?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([event, createdAt])
+  @@index([userId])
+}

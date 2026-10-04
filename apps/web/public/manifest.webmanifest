@@ -1,0 +1,46 @@
+{
+  "name": "ConsoCI — votre consommation",
+  "short_name": "ConsoCI",
+  "description": "Suivez votre consommation d'eau SODECI et d'électricité CIE.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f8fa",
+  "theme_color": "#111827",
+  "lang": "fr",
+  "dir": "ltr",
+  "categories": ["utilities", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Ajouter une recharge",
+      "short_name": "Recharge",
+      "url": "/ajouter"
+    },
+    {
+      "name": "Voir mon historique",
+      "short_name": "Historique",
+      "url": "/historique"
+    }
+  ]
+}

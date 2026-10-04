@@ -1,0 +1,74 @@
+# CI ConsoCI — flow.md §2 (GitHub Actions).
+# Le pipeline ne dépend d'aucun secret : il compile le moteur, vérifie les types,
+# exécute les tests unitaires puis les tests d'intégration de l'API (qui
+# nécessite un PostgreSQL éphémère).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    name: Qualité (types + tests)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: conso
+          POSTGRES_PASSWORD: conso
+          POSTGRES_DB: conso_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://conso:conso@localhost:5432/conso_ci?schema=public
+      AUTH_SECRET: secret-de-ci-uniquement
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Générer le client Prisma
+        # `npm run prisma` n'existe pas comme script : seul le binaire du
+        # workspace racine le résout. On appelle `prisma exec` explicitement.
+        run: npm --workspace apps/web exec prisma generate
+
+      - name: Vérifier le schéma Prisma
+        run: npm --workspace apps/web exec prisma validate
+
+      - name: Construire le moteur de tarification
+        run: npm run build:engine
+
+      - name: Vérifier les types
+        run: npm --workspace apps/web exec tsc --noEmit
+
+      - name: Vérifier l'absence de code mort
+        # --noUnusedLocals / --noUnusedParameters : un import ou une variable
+        # inutilisés cassent le pipeline plutôt que de s'accumuler.
+        run: npm --workspace apps/web exec tsc --noEmit --noUnusedLocals --noUnusedParameters
+
+      - name: Tests unitaires
+        # Moteur de tarification + quotas, validation et OTP de l'application
+        run: npm test
+
+      - name: Tests d'intégration de l'API (flow.md §53)
+        # Schéma PostgreSQL distinct (test_consoci) : la base n'est jamais
+        # réinitialisée, seulement purgée entre les fichiers.
+        run: npm run test:integration

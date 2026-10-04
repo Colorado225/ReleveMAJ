@@ -1,0 +1,28 @@
+{
+  "name": "conso-ci",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build:engine && npm run dev:web",
+    "dev:web": "npm --workspace apps/web run dev",
+    "build": "npm run build:engine && npm run build:web",
+    "build:engine": "npm --workspace packages/tariff-engine run build",
+    "build:web": "npm --workspace apps/web run build",
+    "start": "npm --workspace apps/web run start",
+    "db:push": "npm --workspace apps/web run db:push",
+    "db:seed": "npm --workspace apps/web run db:seed",
+    "db:studio": "npm --workspace apps/web run db:studio",
+    "test": "npm run build:engine && npm --workspace packages/tariff-engine test && npm --workspace apps/web run test:app",
+    "test:engine": "npm run build:engine && npm --workspace packages/tariff-engine test",
+    "test:app": "npm --workspace apps/web run test:app",
+    "test:integration": "npm --workspace apps/web run test:integration",
+    "typecheck": "npm --workspace apps/web run typecheck",
+    "setup": "cp apps/web/.env.example apps/web/.env"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,178 @@
+@import "tailwindcss";
+
+/*
+ * Design system ConsoCI.
+ *
+ * Les tokens d'origine sont conservés tels quels (`:root` ci-dessous) : les
+ * pages qui n'utilisent pas encore shadcn rendent exactement comme avant.
+ *
+ * Les variables `--*` en oklch sont celles de shadcn/ui. Elles sont calées sur
+ * la palette existante — gris-900 (`#111827`) pour les actions, fond
+ * `#f7f8fa` — afin que l'installation de shadcn ne change pas l'identité
+ * visuelle du produit.
+ */
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #111827;
+  background: #f7f8fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  /* shadcn : rayons et couleurs (palette « neutral », ajustée sur #111827) */
+  --radius: 0.75rem;
+
+  --background: oklch(0.98 0.002 250);
+  --foreground: oklch(0.21 0.02 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 260);
+  --primary: oklch(0.21 0.02 260);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.003 250);
+  --secondary-foreground: oklch(0.21 0.02 260);
+  --muted: oklch(0.96 0.003 250);
+  --muted-foreground: oklch(0.55 0.01 260);
+  --accent: oklch(0.96 0.003 250);
+  --accent-foreground: oklch(0.21 0.02 260);
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.92 0.004 250);
+  --input: oklch(0.92 0.004 250);
+  --ring: oklch(0.21 0.02 260);
+
+  /* Palette des graphiques (`ChartContainer` de shadcn). Deux teintes
+     distinctes : l'électricité et l'eau ne doivent pas se confondre
+     (flow.md §16 — la provenance d'une valeur reste lisible). */
+  --chart-1: oklch(0.35 0.02 260); /* gris ardoise — électricité */
+  --chart-2: oklch(0.6 0.1 220); /* bleu — eau */
+  --chart-3: oklch(0.65 0.14 75);
+  --chart-4: oklch(0.55 0.13 155);
+  --chart-5: oklch(0.55 0.16 300);
+
+  /* flow.md §51 — les mêmes statuts que StatusBadge, en variables shadcn */
+  --status-real: oklch(0.55 0.13 155);
+  --status-estimate: oklch(0.65 0.14 75);
+  --status-calculated: oklch(0.6 0.12 230);
+  --status-forecast: oklch(0.55 0.16 300);
+}
+
+/* Exposition des variables shadcn comme couleurs Tailwind (Tailwind v4). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* couleurs des graphiques — `ChartContainer` de shadcn */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Alias de la police : évite de répéter `font-family` dans chaque feuille. */
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(16px);
+}
+
+/*
+ * flow.md §43 — accessibilité.
+ */
+
+/* Focus toujours visible : la navigation au clavier ne doit pas dépendre de
+ * l'anneau par défaut, absent sur plusieurs navigateurs. */
+:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Idem pour les liens de navigation, dont l'anneau serait sinon tronqué par
+ * le débordement du parent. */
+a:focus-visible,
+button:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
+
+/*
+ * flow.md §43 — « boutons suffisamment grands sur mobile ».
+ * 44 px is the recommended minimum touch target (iOS HIG / Material).
+ * Applied without breaking existing density: only the vertical padding grows
+ * on small screens.
+ */
+@media (max-width: 640px) {
+  button,
+  a[role='button'],
+  input[type='submit'] {
+    min-height: 44px;
+  }
+}
+
+/*
+ * flow.md §44 — « éviter les animations permanentes », tout en respectant le
+ * réglage système. Si l'utilisateur demande moins de mouvement, l'animation
+ * devient instantanée plutôt que supprimée : le changement reste visible.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Respect du réglage « contraste élevé » (flow.md §43 « contrastes »). */
+@media (prefers-contrast: more) {
+  :root {
+    color: #000;
+    background: #fff;
+  }
+}
+
+/* Accessibilité des champs de formulaire. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 0;
+  border-color: #111827;
+}

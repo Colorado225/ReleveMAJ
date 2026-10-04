@@ -1,0 +1,25 @@
+# Dépendances
+node_modules/
+
+# Builds
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# Variables d'environnement — jamais versionnées (flow.md §40)
+.env
+.env.local
+.env*.local
+apps/web/.env
+
+# Reçus téléversés par les utilisateurs
+apps/web/uploads/
+uploads/
+
+# Système et éditeurs
+.DS_Store
+*.log
+.vscode/
+.idea/
+.neon
