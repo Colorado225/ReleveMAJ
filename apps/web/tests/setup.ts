@@ -165,6 +165,7 @@ export async function seedTariffs(db: {
 
 /** Vide les tables métier sans casser les clés étrangères. */
 export async function resetTestData(db: {
+  alert: { deleteMany: () => Promise<unknown> };
   draftExtraction: { deleteMany: () => Promise<unknown> };
   waterBill: { deleteMany: () => Promise<unknown> };
   consumptionPeriod: { deleteMany: () => Promise<unknown> };
@@ -183,6 +184,10 @@ export async function resetTestData(db: {
   session: { deleteMany: () => Promise<unknown> };
   user: { deleteMany: () => Promise<unknown> };
 }): Promise<void> {
+  // `alert` avant `user` : la clé étrangère pointe sur l'utilisateur.
+  // Sans ce deleteMany, la contrainte `@@unique([userId, type])` ferait échouer
+  // les tests d'alertes d'une exécution à l'autre.
+  await db.alert.deleteMany();
   await db.draftExtraction.deleteMany();
   await db.waterBill.deleteMany();
   await db.consumptionPeriod.deleteMany();

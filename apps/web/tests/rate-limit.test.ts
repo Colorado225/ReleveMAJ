@@ -56,16 +56,26 @@ test('rate limit · 30 requêtes SIMULTANÉES : la limite ne cède pas', async (
 
 test('rate limit · fenêtre expirée : le compteur repart à zéro', async () => {
   const key = `fenetre-${Date.now()}`;
+  // Fenêtre longue : elle doit rester VALIDE pendant les trois appels, sinon on
+  // testerait la latence de la base et non le rate limiter.
+  const WINDOW_LONGUE = 3_600_000;
 
-  // 3 sur une fenêtre de 100 ms
-  await checkRateLimit(key, 2, 100);
-  await checkRateLimit(key, 2, 100);
-  const bloque = await checkRateLimit(key, 2, 100);
+  await checkRateLimit(key, 2, WINDOW_LONGUE);
+  await checkRateLimit(key, 2, WINDOW_LONGUE);
+  const bloque = await checkRateLimit(key, 2, WINDOW_LONGUE);
   assert.equal(bloque.allowed, false);
 
-  // après expiration, la requête doit repasser
-  await new Promise((r) => setTimeout(r, 150));
-  const apres = await checkRateLimit(key, 2, 100);
+  // L'expiration est SIMULÉE en base plutôt qu'attendue : un `setTimeout`
+  // serait noyé dans la latence (2 à 15 s par requête vers la base distante),
+  // et le test deviendrait vert ou rouge selon la machine.
+  // On recule `windowStart` de plus d'une fenêtre : c'est exactement l'état que
+  // la base présenterait une heure plus tard.
+  await db.rateLimit.updateMany({
+    where: { key },
+    data: { windowStart: new Date(Date.now() - WINDOW_LONGUE - 1_000) },
+  });
+
+  const apres = await checkRateLimit(key, 2, WINDOW_LONGUE);
   assert.equal(apres.allowed, true);
 });
 
