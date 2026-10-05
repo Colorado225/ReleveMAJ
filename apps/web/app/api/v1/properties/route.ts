@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { authenticate, fail, guardRateLimit, ok, parse, readJson, unauthorized } from '@/lib/api';
 import { audit } from '@/lib/audit';
 import { track } from '@/lib/analytics';
-import { checkQuota, type PlanName } from '@/lib/plans';
+import { createWithinQuota, type PlanName } from '@/lib/plans';
 import { createPropertySchema } from '@/lib/validation';
 
 export async function GET(request: Request) {
@@ -60,19 +60,27 @@ export async function POST(request: Request) {
   const user = await db.user.findUnique({ where: { id: session.id } });
   if (!user) return unauthorized('Compte introuvable.');
 
-  // flow.md §47 — quota FREE appliqué, sans jamais masquer la donnée existante
-  const count = await db.property.count({ where: { userId: session.id } });
-  const quotaError = checkQuota({ plan: user.plan as PlanName, quota: 'properties', currentCount: count });
-  if (quotaError) return fail(quotaError, 402);
-
-  const property = await db.property.create({
-    data: {
-      name: body.data.name,
-      address: body.data.address,
-      isAbidjan: body.data.isAbidjan,
-      userId: session.id,
-    },
+  // flow.md §47 — quota FREE appliqué, sans jamais masquer la donnée existante.
+  //
+  // Le quota ET la création ont lieu dans la même transaction verrouillée
+  // (`createWithinQuota`). Un `count` préalable resterait une course : deux
+  // requêtes simultanées constateraient toutes deux « 0 logement ».
+  const created = await createWithinQuota({
+    userId: session.id,
+    plan: user.plan as PlanName,
+    quota: 'properties',
+    create: (tx) =>
+      tx.property.create({
+        data: {
+          name: body.data.name,
+          address: body.data.address,
+          isAbidjan: body.data.isAbidjan,
+          userId: session.id,
+        },
+      }),
   });
+  if (!created.ok) return fail(created.message, 402);
+  const property = created.value;
 
   await audit({ action: 'property_created', entity: 'Property', entityId: property.id, userId: session.id });
   await track('property_created', { userId: session.id });

@@ -5,6 +5,23 @@ import { db } from './db';
  * Fenêtre glissante simplifiée : on remet le compteur à zéro une fois la
  * fenêtre expirée. Suffisant pour le MVP et survives au redémarrage serveur.
  */
+/**
+ * Identifiant au format CUID2, celui que Prisma génère pour `@default(cuid())`.
+ *
+ * Le SQL brut doit fournir l'`id` lui-même : Prisma ne le fait pas pour une
+ * requête `$queryRaw`, et la colonne est `NOT NULL`. On reproduit donc le format
+ * attendu plutôt que d'insérer une dépendance — le champ n'est qu'une clé
+ * primaire sans signification, seule l'unicité compte.
+ */
+function createId(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let out = 'c';
+  for (let i = 0; i < 24; i += 1) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return out;
+}
+
 export async function checkRateLimit(
   key: string,
   limit: number,
@@ -12,47 +29,49 @@ export async function checkRateLimit(
 ): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
   const now = new Date();
 
-  // flow.md §40 — le compteur doit être incrémenté de façon ATOMIQUE.
+  // flow.md §40 — le décompte ET la décision tiennent dans UNE seule instruction
+  // SQL. C'est le seul moyen de supprimer la fenêtre entre « lire le compteur »
+  // et « décider ».
   //
-  // La version lecture-puis-écriture avait une faille : deux requêtes
-  // simultanées lisaient la même valeur et passaient toutes les deux, ce qui
-  // doubleait la limite effective — inacceptable sur une protection anti-force
-  // brute. On incrémente d'abord, puis on décide.
+  // ⚠ Les deux tentatives précédentes échouaient :
   //
-  // `createMany` + `skipDuplicates` réserve la clé sans lever d'exception
-  // (un `create` qui échouerait polluerait les journaux à chaque appel).
-  const inserted = await db.rateLimit.createMany({
-    data: [{ key, count: 1, windowStart: now }],
-    skipDuplicates: true,
-  });
-  if (inserted.count === 1) return { allowed: true, retryAfterSeconds: 0 };
+  // 1. `count` puis `update` : deux requêtes simultanées lisaient la même
+  //    valeur et passaient toutes les deux.
+  // 2. Même avec un incrément atomique, la RÉINITIALISATION restait une course :
+  //    dès que la première requête remettait `windowStart = now`, les suivantes
+  //    retrouvaient une fenêtre ouverte et s'incrémentaient au lieu d'être
+  //    comptées. Le compteur repartait de 1 à chaque fois — vérifié par un test.
+  //
+  // Ici un `CASE` décide de tout dans la clause `DO UPDATE` :
+  // - fenêtre expirée → `count = 1` et `windowStart = now` ;
+  // - fenêtre ouverte → `count + 1`, `windowStart` inchangé.
+  //
+  // `RETURNING` rend la valeur DÉFINITIVE après écriture : aucune relecture,
+  // et le décompte est exact même si cinq requêtes arrivent ensemble.
+  //
+  // `db.$queryRaw` est nécessaire car Prisma n'expose pas d'UPSERT
+  // conditionnel. Toutes les valeurs sont des paramètres liés, jamais
+  // interpolées : aucune injection possible.
+  const seuil = new Date(now.getTime() - windowMs);
 
-  // la clé existe déjà : on incrémente si la fenêtre est encore ouverte
-  const incremented = await db.rateLimit.updateMany({
-    where: { key, windowStart: { gt: new Date(now.getTime() - windowMs) } },
-    data: { count: { increment: 1 } },
-  });
+  const rows = await db.$queryRaw<{ count: number; windowStart: Date }[]>`
+    INSERT INTO "RateLimit" ("id", "key", "count", "windowStart")
+    VALUES (${createId()}, ${key}, 1, ${now})
+    ON CONFLICT ("key") DO UPDATE
+      SET "count" = CASE WHEN "RateLimit"."windowStart" > ${seuil}
+                         THEN "RateLimit"."count" + 1
+                         ELSE 1 END,
+          "windowStart" = CASE WHEN "RateLimit"."windowStart" > ${seuil}
+                               THEN "RateLimit"."windowStart"
+                               ELSE ${now} END
+      RETURNING "count", "windowStart"
+  `;
 
-  if (incremented.count === 0) {
-    // fenêtre expirée : on repart à zéro
-    await db.rateLimit.updateMany({
-      where: { key },
-      data: { count: 1, windowStart: now },
-    });
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-
-  // on relit pour connaître la valeur exacte après incrément
-  const current = await db.rateLimit.findUnique({ where: { key } });
-  if (!current) return { allowed: true, retryAfterSeconds: 0 };
-
-  if (current.count > limit) {
-    const retryAfterSeconds = Math.ceil(
-      (current.windowStart.getTime() + windowMs - now.getTime()) / 1000,
-    );
+  const { count, windowStart } = rows[0];
+  if (count > limit) {
+    const retryAfterSeconds = Math.ceil((windowStart.getTime() + windowMs - now.getTime()) / 1000);
     return { allowed: false, retryAfterSeconds: Math.max(1, retryAfterSeconds) };
   }
-
   return { allowed: true, retryAfterSeconds: 0 };
 }
 

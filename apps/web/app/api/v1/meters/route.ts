@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { authenticate, fail, forbidden, guardRateLimit, ok, parse, readJson, unauthorized } from '@/lib/api';
 import { audit } from '@/lib/audit';
 import { track } from '@/lib/analytics';
-import { checkQuota, type PlanName } from '@/lib/plans';
+import { createWithinQuota, type PlanName } from '@/lib/plans';
 import { createMeterSchema } from '@/lib/validation';
 
 type MeterRow = {
@@ -73,30 +73,34 @@ export async function POST(request: Request) {
   const body = parse(createMeterSchema, raw);
   if (!body.success) return fail(body.error.error, 422, body.error.field);
 
+  // flow.md §47 — quota FREE : porte sur le volume, pas sur la compréhension.
+  //
+  // Comptage et création dans UNE transaction verrouillée : deux requêtes
+  // simultanées ne peuvent pas toutes deux constater qu'il reste un compteur.
   const user = await db.user.findUnique({ where: { id: session.id } });
-  const meterCount = await db.meter.count({ where: { property: { userId: session.id } } });
-  // flow.md §47 — quota FREE : porte sur le volume, pas sur la compréhension
-  const quotaError = checkQuota({
-    plan: (user?.plan ?? 'FREE') as PlanName,
-    quota: 'meters',
-    currentCount: meterCount,
-  });
-  if (quotaError) return fail(quotaError, 402);
 
   // flow.md §9 — le mode de paiement est conservé tel quel, jamais supposé
   const unit = body.data.utilityType === 'ELECTRICITY' ? 'KWH' : 'M3';
-  const meter = await db.meter.create({
-    data: {
-      propertyId: property.id,
-      provider: body.data.provider,
-      utilityType: body.data.utilityType,
-      paymentMode: body.data.paymentMode,
-      meterNumber: body.data.meterNumber,
-      subscribedPower: body.data.subscribedPower,
-      label: body.data.label,
-      unit,
-    },
+  const created = await createWithinQuota({
+    userId: session.id,
+    plan: (user?.plan ?? 'FREE') as PlanName,
+    quota: 'meters',
+    create: (tx) =>
+      tx.meter.create({
+        data: {
+          propertyId: property.id,
+          provider: body.data.provider,
+          utilityType: body.data.utilityType,
+          paymentMode: body.data.paymentMode,
+          meterNumber: body.data.meterNumber,
+          subscribedPower: body.data.subscribedPower,
+          label: body.data.label,
+          unit,
+        },
+      }),
   });
+  if (!created.ok) return fail(created.message, 402);
+  const meter = created.value;
 
   await audit({ action: 'meter_created', entity: 'Meter', entityId: meter.id, userId: session.id });
   await track('meter_created', { userId: session.id, metadata: { utilityType: body.data.utilityType } });

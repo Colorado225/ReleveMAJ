@@ -134,7 +134,30 @@ export async function verifyOtp(_prev: string | null, formData: FormData) {
     return 'Code incorrect.';
   }
 
-  await db.otpChallenge.update({ where: { id: challenge.id }, data: { consumedAt: new Date() } });
+  // consommation ATOMIQUE — c'est ici que se joue la course.
+  //
+  // ⚠ Le `challenge` ci-dessus est une LECTURE. Deux vérifications simultanées
+  // du même code pourraient toutes deux le voir `consumedAt = null`, valider,
+  // puis toutes deux consommer : un OTP à 6 chiffres donnerait deux sessions.
+  //
+  // `updateMany` avec `consumedAt: null` dans le WHERE ne met à jour que la
+  // ligne ENCORE disponible : une seule des deux requêtes obtient `count === 1`.
+  const consumed = await db.otpChallenge.updateMany({
+    where: { id: challenge.id, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+
+  if (consumed.count === 0) {
+    // Un concurrent a consommé ce code entre-temps : le même OTP servi
+    // deux fois est exactement ce qu'on refuse d'accorder.
+    await audit({
+      action: 'otp_verify_replay_detected',
+      entity: 'OtpChallenge',
+      entityId: challenge.id,
+      metadata: { phone, ip },
+    });
+    return 'Ce code vient d’être utilisé. Demandez-en un nouveau.';
+  }
 
   const user = await db.user.upsert({
     where: { phone },

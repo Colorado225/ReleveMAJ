@@ -24,7 +24,7 @@ import { reverseEstimate } from '@conso-ci/tariff-engine';
 import { deleteUploadedFile, saveReceipt } from './upload';
 import { audit } from './audit';
 import { track } from './analytics';
-import { checkQuota, type PlanName } from './plans';
+import { createWithinQuota, type PlanName } from './plans';
 import {
   confirmDraftExtraction,
   createDraftExtraction,
@@ -87,28 +87,36 @@ export async function createPropertyAction(
   });
   if (!parsed.success) return firstIssue(parsed.error);
 
-  // flow.md §47 — la limite porte sur le volume, jamais sur la compréhension
-  const [user, propertyCount] = await Promise.all([
-    db.user.findUnique({ where: { id: session.id }, select: { plan: true } }),
-    db.property.count({ where: { userId: session.id } }),
-  ]);
-  const quotaError = checkQuota({
+  // flow.md §47 — la limite porte sur le volume, jamais sur la compréhension.
+  //
+  // Comptage et création ont lieu dans UNE transaction verrouillée : sinon deux
+  // envois simultanés du formulaire tous deux « 0 logement » et tous deux
+  // autorisés donnaient 2 logements à un compte FREE.
+  const user = await db.user.findUnique({ where: { id: session.id }, select: { plan: true } });
+
+  const created = await createWithinQuota({
+    userId: session.id,
     plan: (user?.plan ?? 'FREE') as PlanName,
     quota: 'properties',
-    currentCount: propertyCount,
+    create: (tx) =>
+      tx.property.create({
+        data: {
+          name: parsed.data.name,
+          address: parsed.data.address,
+          isAbidjan: parsed.data.isAbidjan,
+          userId: session.id,
+        },
+      }),
   });
-  if (quotaError) return quotaError;
+  if (!created.ok) return created.message;
 
-  await db.property.create({
-    data: {
-      name: parsed.data.name,
-      address: parsed.data.address,
-      isAbidjan: parsed.data.isAbidjan,
-      userId: session.id,
-    },
-  });
   revalidatePath('/profil');
-  await audit({ action: 'property_created', entity: 'Property', userId: session.id });
+  await audit({
+    action: 'property_created',
+    entity: 'Property',
+    entityId: created.value.id,
+    userId: session.id,
+  });
   // flow.md §48 — activation
   await track('property_created', { userId: session.id });
   return null;
@@ -210,33 +218,40 @@ export async function createMeterAction(
   });
   if (!parsed.success) return firstIssue(parsed.error);
 
-  // flow.md §47 — quota de compteurs
-  const [user, meterCount] = await Promise.all([
-    db.user.findUnique({ where: { id: session.id }, select: { plan: true } }),
-    db.meter.count({ where: { property: { userId: session.id } } }),
-  ]);
-  const quotaError = checkQuota({
+  // flow.md §47 — quota de compteurs.
+  //
+  // Comptage et création dans UNE transaction verrouillée : deux envois
+  // simultanés ne peuvent plus obtenir chacun « il reste 1 compteur » puis en
+  // créer deux.
+  const user = await db.user.findUnique({ where: { id: session.id }, select: { plan: true } });
+  const unit = parsed.data.utilityType === 'ELECTRICITY' ? 'KWH' : 'M3';
+
+  const created = await createWithinQuota({
+    userId: session.id,
     plan: (user?.plan ?? 'FREE') as PlanName,
     quota: 'meters',
-    currentCount: meterCount,
+    create: (tx) =>
+      tx.meter.create({
+        data: {
+          propertyId: property.id,
+          provider: parsed.data.provider,
+          utilityType: parsed.data.utilityType,
+          paymentMode: parsed.data.paymentMode,
+          meterNumber: parsed.data.meterNumber,
+          subscribedPower: parsed.data.subscribedPower,
+          label: parsed.data.label,
+          unit,
+        },
+      }),
   });
-  if (quotaError) return quotaError;
-
-  const unit = parsed.data.utilityType === 'ELECTRICITY' ? 'KWH' : 'M3';
-  await db.meter.create({
-    data: {
-      propertyId: property.id,
-      provider: parsed.data.provider,
-      utilityType: parsed.data.utilityType,
-      paymentMode: parsed.data.paymentMode,
-      meterNumber: parsed.data.meterNumber,
-      subscribedPower: parsed.data.subscribedPower,
-      label: parsed.data.label,
-      unit,
-    },
-  });
+  if (!created.ok) return created.message;
   revalidatePath('/profil');
-  await audit({ action: 'meter_created', entity: 'Meter', userId: session.id });
+  await audit({
+    action: 'meter_created',
+    entity: 'Meter',
+    entityId: created.value.id,
+    userId: session.id,
+  });
   await track('meter_created', {
     userId: session.id,
     metadata: { utilityType: parsed.data.utilityType },
