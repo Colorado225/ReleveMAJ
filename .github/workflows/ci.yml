@@ -57,12 +57,17 @@ jobs:
         run: npm run build:engine
 
       - name: Vérifier les types
-        run: npm --workspace apps/web exec tsc --noEmit
+        run: npm --workspace apps/web exec -- tsc --noEmit
 
       - name: Vérifier l'absence de code mort
         # --noUnusedLocals / --noUnusedParameters : un import ou une variable
         # inutilisés cassent le pipeline plutôt que de s'accumuler.
-        run: npm --workspace apps/web exec tsc --noEmit --noUnusedLocals --noUnusedParameters
+        #
+        # ⚠ Le `--` est indispensable : sans lui, npm consomme `--noEmit` et
+        # `--noUnusedLocals` comme ses propres options (`npm warn Unknown cli
+        # config`) et `tsc` s'exécute SANS les drapeaux. L'étape passait donc au
+        # vert sans rien vérifier.
+        run: npm --workspace apps/web exec -- tsc --noEmit --noUnusedLocals --noUnusedParameters
 
       - name: Tests unitaires
         # Moteur de tarification + quotas, validation et OTP de l'application

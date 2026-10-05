@@ -4,7 +4,7 @@
 // modification. Le moteur recalcule la consommation à chaque affichage, aucune
 // valeur dérivée n'est stockée, donc corriger un appareil ne réécrit rien.
 import { db } from '@/lib/db';
-import { authenticate, fail, forbidden, guardRateLimit, notFound, ok, parse, parseBody, unauthorized } from '@/lib/api';
+import { authenticate, fail, forbidden, guardRateLimit, ok, parse, parseBody, unauthorized } from '@/lib/api';
 import { audit } from '@/lib/audit';
 import { createApplianceSchema } from '@/lib/validation';
 

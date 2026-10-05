@@ -1074,9 +1074,11 @@ export async function acknowledgeAlertAction(
   const session = await requireUser();
 
   const type = String(formData.get('type') ?? '');
-  const title = String(formData.get('title') ?? '').trim();
-  const body = String(formData.get('body') ?? '').trim();
-  const severity = String(formData.get('severity') ?? 'INFO');
+
+  // Le formulaire transmet aussi `title`, `body` et `severity` pour l'affichage,
+  // mais cette action les IGNORE volontairement : seul `type` est lu, et le
+  // contenu enregistré provient du moteur. Les lire ici sans s'en servir
+  // n'apporterait rien — d'où leur absence, pas un `void` artificiel.
 
   // Ces quatre champs viennent d'un `<form>` : on ne fait jamais confiance à un
   // contenu client sans vérifier qu'il correspond à une alerte réellement

@@ -86,11 +86,12 @@ function createPrismaClient(): PrismaClient {
 
   // `$extends` enveloppe chaque opération : le retry est donc appliqué
   // uniformément, sans que chaque appelant ait à s'en soucier.
+  // Les arguments `model` et `operation` sont fournis par Prisma mais inutiles
+  // ici : le retry ne dépend pas de l'entité visée.
   return client.$extends({
     name: 'retryOnClosedConnection',
     query: {
-      $allOperations: ({ model, operation, args, query }) =>
-        withConnectionRetry(() => query(args)),
+      $allOperations: ({ args, query }) => withConnectionRetry(() => query(args)),
     },
   }) as unknown as PrismaClient;
 }
