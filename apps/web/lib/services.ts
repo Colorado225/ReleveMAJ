@@ -1,4 +1,5 @@
 import { db } from './db';
+import { shouldComputeConsumptionPeriod, validateReadingAgainstMeter } from './reading-rules';
 import {
   buildRecommendations,
   calculateConsumption,
@@ -94,6 +95,22 @@ export async function addReading(input: {
   if (!meter) throw new Error('Compteur introuvable.');
   if (!meter.active) throw new Error('Ce compteur est désactivé.');
 
+  // flow.md §9 et §10 — un relevé doit être cohérent avec SON compteur.
+  //
+  // Le schéma Zod ne connaît que la valeur : il ne peut pas savoir qu'un
+  // `CREDIT` en KWH n'a pas de sens sur un compteur SODECI. La règle est ici, au
+  // seul endroit qui connaît le compteur, donc valable pour la Server Action
+  // comme pour l'API REST.
+  //
+  // AVANT le `create` : valider après n'empêcherait rien, le relevé refusé
+  // resterait dans la base.
+  const incoherent = validateReadingAgainstMeter({
+    meterKind: meter.utilityType,
+    unit: input.unit,
+    readingType: input.readingType,
+  });
+  if (incoherent) throw new Error(incoherent);
+
   const readingDate = input.readingDate ? new Date(input.readingDate) : new Date();
   const reading = await db.meterReading.create({
     data: {
@@ -108,8 +125,11 @@ export async function addReading(input: {
     },
   });
 
-  // Seuls les relevés d'INDEX alimentent un calcul déterministe (§10 et §2).
-  if (input.readingType !== 'INDEX') return { reading, period: null };
+  // Une période de consommation est un différentiel d'INDEX, quel que soit le
+  // type de compteur (voir reading-rules : un CIE postpayé a un index réel).
+  if (!shouldComputeConsumptionPeriod({ readingType: input.readingType })) {
+    return { reading, period: null };
+  }
 
   const previous = await db.meterReading.findFirst({
     where: { meterId: input.meterId, id: { not: reading.id }, readingType: 'INDEX', readingDate: { lt: readingDate } },

@@ -95,7 +95,11 @@ export async function POST(request: Request, context: Ctx) {
           ? {
               id: result.period.id,
               quantity: result.period.quantity,
-              unit: 'M3',
+              // Plus de `unit: 'M3'` en dur (instr.md §10). Une période n'est désormais
+              // produite que pour un compteur SODECI à index — `addReading` refuse
+              // tout le reste — mais l'unité reste LUE sur le relevé plutôt
+              // qu'inventée : si la règle change un jour, l'API ne mentira pas.
+              unit: result.reading.unit,
               dailyAverage: result.period.dailyAverage,
               startDate: result.period.startDate.toISOString(),
               endDate: result.period.endDate.toISOString(),
