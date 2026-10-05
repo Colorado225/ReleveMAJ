@@ -3,15 +3,19 @@
 import { revalidatePath } from 'next/cache';
 import { getSessionUser } from './auth';
 import { db } from './db';
-import { addReading, resolveMeterTariff } from './services';
+import { addReading, getDashboard, resolveMeterTariff } from './services';
 import {
+  budgetSchema,
   createApplianceSchema,
   createMeterSchema,
   createPropertySchema,
   createPurchaseSchema,
   createReadingSchema,
   createWaterBillSchema,
+  updateApplianceSchema,
+  updateBudgetSchema,
   updateMeterSchema,
+  updateProfileSchema,
   updatePropertySchema,
   updatePurchaseSchema,
   updateWaterBillSchema,
@@ -60,6 +64,14 @@ async function ownedProperty(id: string, userId: string) {
 
 async function ownedMeter(id: string, userId: string) {
   return db.meter.findFirst({ where: { id, property: { userId } }, select: { id: true } });
+}
+
+async function ownedAppliance(id: string, userId: string) {
+  return db.appliance.findFirst({ where: { id, property: { userId } }, select: { id: true } });
+}
+
+async function ownedBudget(id: string, userId: string) {
+  return db.budget.findFirst({ where: { id, property: { userId } }, select: { id: true } });
 }
 
 /** flow.md §33 et §60 — création du logement */
@@ -568,6 +580,49 @@ export async function createApplianceAction(
   return null;
 }
 
+/**
+ * flow.md §32 — modifier un appareil.
+ *
+ * Un appareil se corrige facilement : on se trompe de puissance ou de durée
+ * d'utilisation. Contrairement au relevé, aucune valeur financière n'en dépend :
+ * l'estimation est recalculée à chaque affichage, elle n'est pas stockée.
+ *
+ * Le rattachement au logement n'est pas modifiable : il détermine le périmètre
+ * de l'estimation (cf. `updateApplianceSchema`).
+ */
+export async function updateApplianceAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const id = String(formData.get('id') ?? '');
+  if (!id) return 'Appareil introuvable.';
+
+  const appliance = await ownedAppliance(id, session.id);
+  if (!appliance) return 'Appareil introuvable.';
+
+  const parsed = updateApplianceSchema.safeParse({
+    type: formData.get('type'),
+    label: formData.get('label'),
+    powerWatts: Number(formData.get('powerWatts')),
+    hoursPerDay: Number(formData.get('hoursPerDay')),
+    daysPerMonth: Number(formData.get('daysPerMonth')),
+  });
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  await db.appliance.update({ where: { id: appliance.id }, data: parsed.data });
+
+  await audit({
+    action: 'appliance_updated',
+    entity: 'Appliance',
+    entityId: appliance.id,
+    userId: session.id,
+  });
+
+  revalidatePath('/appareils');
+  return null;
+}
+
 /** flow.md §32 — supprimer un appareil du logement. */
 export async function deleteApplianceAction(
   _prev: string | null,
@@ -813,6 +868,292 @@ export async function deleteWaterBillAction(
   return null;
 }
 
+// ---------- Budget mensuel (flow.md §24 et §30) ----------
+//
+// Le budget est la seule donnée de comparaison que l'utilisateur SAISIT
+// lui-même : aucun tarif réglementaire ne le fournit. Il sert à dire « je
+// dépasse ou non », jamais à calculer une facture.
+
+/** Création d'un budget mensuel pour un logement. */
+export async function createBudgetAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const propertyId = String(formData.get('propertyId') ?? '');
+
+  const property = await db.property.findFirst({
+    where: { id: propertyId, userId: session.id },
+    select: { id: true },
+  });
+  if (!property) return 'Logement introuvable.';
+
+  const parsed = budgetSchema.safeParse({
+    propertyId,
+    category: formData.get('category'),
+    monthlyAmount: Number(formData.get('monthlyAmount')),
+  });
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  // Un budget par catégorie et par logement : deux enveloppes sur la même
+  // catégorie ne pourraient jamais être additionnées, et `services.ts` n'en
+  // lirait qu'une au hasard (il prend la plus récente).
+  const existing = await db.budget.findFirst({
+    where: { propertyId: property.id, category: parsed.data.category },
+    select: { id: true },
+  });
+  if (existing) return 'Un budget existe déjà pour cette catégorie. Modifiez-le plutôt.';
+
+  await db.budget.create({
+    data: {
+      propertyId: property.id,
+      category: parsed.data.category,
+      monthlyAmount: parsed.data.monthlyAmount,
+    },
+  });
+
+  await audit({
+    action: 'budget_created',
+    entity: 'Budget',
+    userId: session.id,
+    metadata: { category: parsed.data.category },
+  });
+
+  revalidatePath('/profil');
+  revalidatePath('/');
+  revalidatePath('/consommation');
+  return null;
+}
+
+/**
+ * Modification d'un budget.
+ *
+ * Seul le montant change : changer la catégorie d'une enveloppe existante
+ * produirait une historique trompeur (« mon budget électricité était de 35 000,
+ * il est passé à 20 000 pour l'eau »). Pour changer de catégorie, on supprime
+ * et on recrée — ce que l'interface propose explicitement.
+ */
+export async function updateBudgetAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const id = String(formData.get('id') ?? '');
+  if (!id) return 'Budget introuvable.';
+
+  const budget = await ownedBudget(id, session.id);
+  if (!budget) return 'Budget introuvable.';
+
+  const parsed = updateBudgetSchema.safeParse({
+    monthlyAmount: Number(formData.get('monthlyAmount')),
+  });
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  await db.budget.update({
+    where: { id: budget.id },
+    data: { monthlyAmount: parsed.data.monthlyAmount },
+  });
+
+  await audit({ action: 'budget_updated', entity: 'Budget', entityId: budget.id, userId: session.id });
+
+  revalidatePath('/profil');
+  revalidatePath('/');
+  revalidatePath('/consommation');
+  return null;
+}
+
+/**
+ * Suppression d'un budget.
+ *
+ * Aucune cascade ici : le budget est un point de comparaison, pas une donnée
+ * d'historique. Supprimer l'enveloppe n'affecte ni les factures déjà saisies
+ * ni les périodes de consommation.
+ */
+export async function deleteBudgetAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const id = String(formData.get('id') ?? '');
+
+  const budget = await ownedBudget(id, session.id);
+  if (!budget) return 'Budget introuvable.';
+
+  await db.budget.delete({ where: { id: budget.id } });
+  await audit({ action: 'budget_deleted', entity: 'Budget', entityId: budget.id, userId: session.id });
+
+  revalidatePath('/profil');
+  revalidatePath('/');
+  revalidatePath('/consommation');
+  return null;
+}
+
+// ---------- Alertes (flow.md §33) ----------
+
+/**
+ * Résoudre ou rouvrir une alerte.
+ *
+ * `resolvedAt` est une date, jamais un booléen : « résolue le 3 mars » est une
+ * information, « résolue : oui/non » ne l'est pas. Rouvrir remet le champ à
+ * `null` pour que l'alerte réapparaisse parmi les alertes actives.
+ */
+export async function updateAlertAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const id = String(formData.get('id') ?? '');
+
+  const alert = await db.alert.findFirst({
+    where: { id, userId: session.id },
+    select: { id: true, resolvedAt: true },
+  });
+  if (!alert) return 'Alerte introuvable.';
+
+  // Un clic sur « résoudre » puis sur « rouvrir » : l'état courant suffit à
+  // décider, aucun champ caché n'est nécessaire.
+  await db.alert.update({
+    where: { id: alert.id },
+    data: { resolvedAt: alert.resolvedAt ? null : new Date() },
+  });
+
+  await audit({ action: 'alert_updated', entity: 'Alert', entityId: alert.id, userId: session.id });
+
+  revalidatePath('/');
+  revalidatePath('/profil');
+  revalidatePath('/alertes');
+  return null;
+}
+
+/**
+ * Supprimer une alerte.
+ *
+ * ⚠ Résoudre est réversible, supprimer ne l'est pas : c'est pourquoi
+ * l'interface ne propose la suppression que sur les alertes déjà résolues.
+ * Une alerte active doit d'abord être traitée, pas effacée.
+ */
+export async function deleteAlertAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+  const id = String(formData.get('id') ?? '');
+
+  const alert = await db.alert.findFirst({
+    where: { id, userId: session.id },
+    select: { id: true, resolvedAt: true },
+  });
+  if (!alert) return 'Alerte introuvable.';
+
+  if (!alert.resolvedAt) return 'Traitez d’abord cette alerte avant de la supprimer.';
+
+  await db.alert.delete({ where: { id: alert.id } });
+  await audit({ action: 'alert_deleted', entity: 'Alert', entityId: alert.id, userId: session.id });
+
+  revalidatePath('/');
+  revalidatePath('/profil');
+  revalidatePath('/alertes');
+  return null;
+}
+/**
+ * Enregistrer une alerte CALCULÉE comme « traitée » (flow.md §33).
+ *
+ * Les alertes de `getDashboard` sont recalculées à chaque appel et ne sont
+ * donc pas stockées. Cette action sert à persister le fait que l'utilisateur a
+ * traité une alerte d'un type donné : elle crée la ligne `Alert` correspondante,
+ * marquée résolue, pour qu'elle ne soit plus présentée.
+ *
+ * L'upsert porte sur `(userId, type)` : traiter deux fois la même alerte ne crée
+ * pas deux lignes. Le `type` est la clé naturelle — c'est lui qui identifie le
+ * constat, pas l'identifiant technique.
+ */
+export async function acknowledgeAlertAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+
+  const type = String(formData.get('type') ?? '');
+  const title = String(formData.get('title') ?? '').trim();
+  const body = String(formData.get('body') ?? '').trim();
+  const severity = String(formData.get('severity') ?? 'INFO');
+
+  // Ces quatre champs viennent d'un `<form>` : on ne fait jamais confiance à un
+  // contenu client sans vérifier qu'il correspond à une alerte réellement
+  // calculée pour cet utilisateur (flow.md §40).
+  const dashboard = await getDashboard(session.id);
+  const known = dashboard.alerts.find((a) => a.type === type);
+  if (!known) return 'Alerte inconnue ou déjà traitée.';
+
+  // Le contenu affiché est celui du moteur, jamais celui transmis par le client.
+  await db.alert.upsert({
+    where: { userId_type: { userId: session.id, type } },
+    create: {
+      userId: session.id,
+      type,
+      severity: known.severity,
+      title: known.title,
+      body: known.body,
+      actionable: known.actionable,
+      resolvedAt: new Date(),
+    },
+    update: { resolvedAt: new Date() },
+  });
+
+  await audit({ action: 'alert_acknowledged', entity: 'Alert', userId: session.id });
+
+  revalidatePath('/alertes');
+  revalidatePath('/');
+  revalidatePath('/profil');
+  return null;
+}
+
+// ---------- Profil (flow.md §38) ----------
+
+/**
+ * Modification du profil.
+ *
+ * Ni le téléphone ni le palier ne sont modifiables ici :
+ * - le téléphone est l'IDENTITÉ de connexion, le changer exige une
+ *   vérification OTP sur le nouveau numéro, pas une Server Action ;
+ * - le palier relève de la facturation.
+ *
+ * Un champ vide est enregistré comme `null` et non comme une chaîne vide :
+ * `''` se lirait « prénom renseigné mais vide », ce qui fausse l'affichage.
+ */
+export async function updateProfileAction(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const session = await requireUser();
+
+  const firstName = String(formData.get('firstName') ?? '').trim();
+  const lastName = String(formData.get('lastName') ?? '').trim();
+
+  const parsed = updateProfileSchema.safeParse({
+    firstName: firstName || undefined,
+    lastName: lastName || undefined,
+  });
+  if (!parsed.success) return firstIssue(parsed.error);
+
+  // ⚠ `|| null` et non `?? null` : `''` n'est ni `null` ni `undefined`, donc
+  // `'' ?? null` renverrait `''`. La chaîne vide doit EFFACER le champ, sinon
+  // la base garderait un prénom « renseigné mais vide ».
+  await db.user.update({
+    where: { id: session.id },
+    data: {
+      firstName: parsed.data.firstName?.trim() || null,
+      lastName: parsed.data.lastName?.trim() || null,
+    },
+  });
+
+  await audit({ action: 'profile_updated', entity: 'User', entityId: session.id, userId: session.id });
+
+  revalidatePath('/profil');
+  revalidatePath('/');
+  return null;
+}
+
 /**
  * flow.md §21 — suppression d'un relevé.
  *
@@ -840,3 +1181,4 @@ export async function deleteReadingAction(
   await audit({ action: 'meter_reading_deleted', entity: 'MeterReading', entityId: reading.id, userId: session.id });
   return null;
 }
+

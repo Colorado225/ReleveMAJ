@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BarChart3, House, History, UserRound, Plus, Sparkles, Plug, Camera } from 'lucide-react';
+import { BarChart3, House, History, UserRound, Plus, Sparkles, Plug, Camera, Bell } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from './ui';
 
 // Navigation mobile : 4 onglets max autour du bouton d'action (flow.md §5).
-// « Appareils » est volontairement absent de la barre basse : il reste accessible
-// depuis le profil et la sidebar desktop, pour ne pas surcharger l'écran.
+// « Appareils » et « Alertes » sont volontairement absents de la barre basse : ils
+// restent accessibles depuis la sidebar desktop et le profil, pour ne pas
+// surcharger l'écran. Un 5e onglet ferait passer les libellés sous 44 px de large.
 const MOBILE_ITEMS = [
   { href: '/', label: 'Accueil', icon: House },
   { href: '/consommation', label: 'Conso', icon: BarChart3 },
@@ -24,6 +25,7 @@ const DESKTOP_ITEMS = [
   { href: '/historique', label: 'Historique', icon: History },
   { href: '/recus', label: 'Reçus', icon: Camera },
   { href: '/appareils', label: 'Appareils', icon: Plug },
+  { href: '/alertes', label: 'Alertes', icon: Bell },
   { href: '/profil', label: 'Profil', icon: UserRound },
   { href: '/premium', label: 'Formule', icon: Sparkles },
 ];

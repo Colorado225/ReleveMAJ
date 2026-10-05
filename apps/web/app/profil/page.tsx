@@ -4,7 +4,8 @@ import { db } from '@/lib/db';
 import { loadTariffs } from '@/lib/services';
 import { AppShell } from '@/components/app-shell';
 import { Card, EmptyState, StatusBadge } from '@/components/ui';
-import { LogoutButton, MeterForm, PropertyForm } from '@/components/profile-forms';
+import { LogoutButton, MeterForm, ProfileForm, PropertyForm } from '@/components/profile-forms';
+import { BudgetForm, BudgetRow } from '@/components/budget-forms';
 import {
   MeterDeleteControl,
   MeterEditForm,
@@ -27,15 +28,63 @@ export default async function ProfilePage() {
   });
 
   // eligibilityRules et les compteurs CIE servent à afficher un constat indicatif,
-// jamais une affirmation de changement de tarif (flow.md §17).
-const [eligibilityRules, userPlan] = await Promise.all([
-  db.eligibilityRule.findMany(),
-  db.user.findUnique({ where: { id: session.id }, select: { plan: true } }),
-]);
+  // jamais une affirmation de changement de tarif (flow.md §17).
+  const [eligibilityRules, account] = await Promise.all([
+    db.eligibilityRule.findMany(),
+    db.user.findUnique({
+      where: { id: session.id },
+      select: { plan: true, phone: true, firstName: true, lastName: true },
+    }),
+  ]);
 
-const tariff = await loadTariffs();
-const tariffs = tariff;
-const socialRule = eligibilityRules.find((r) => r.schemeCode.includes('SOCIAL'));
+  const tariff = await loadTariffs();
+  const tariffs = tariff;
+  const socialRule = eligibilityRules.find((r) => r.schemeCode.includes('SOCIAL'));
+
+  // flow.md §24 et §30 — les budgets de l'utilisateur, avec la dépense du mois
+  // en cours pour les postes où l'on dispose d'une MESURE (recharges CIE,
+  // factures SODECI). Sans donnée, `spentAmount` reste `null` : le budget est
+  // alors affiché seul, jamais comparé à un chiffre inventé (§11).
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const budgetRows = await db.budget.findMany({
+    where: { property: { userId: session.id } },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const budgets = await Promise.all(
+    budgetRows.map(async (budget) => {
+      const meterIds = properties
+        .filter((p) => p.id === budget.propertyId)
+        .flatMap((p) => p.meters)
+        .map((m) => m.id);
+
+      if (meterIds.length === 0) return { ...budget, spentAmount: null as number | null };
+
+      if (budget.category === 'ELECTRICITY') {
+        const aggregate = await db.electricityPurchase.aggregate({
+          where: { meterId: { in: meterIds }, purchasedAt: { gte: monthStart } },
+          _sum: { amountPaid: true },
+        });
+        return { ...budget, spentAmount: aggregate._sum.amountPaid ?? 0 };
+      }
+
+      if (budget.category === 'WATER') {
+        const aggregate = await db.waterBill.aggregate({
+          where: { meterId: { in: meterIds }, periodStart: { gte: monthStart } },
+          _sum: { amountTtc: true },
+        });
+        return { ...budget, spentAmount: aggregate._sum.amountTtc ?? 0 };
+      }
+
+      // WASTE : aucune donnée de consommation d'ordures n'est collectée par
+      // l'application. On renvoie `null` plutôt qu'un 0 qui voudrait dire
+      // « vous n'avez rien dépensé ».
+      return { ...budget, spentAmount: null as number | null };
+    }),
+  );
 
 // Consommation moyenne observée sur l'historique réel des compteurs CIE
 const electricMeters = properties.flatMap((p) => p.meters).filter((m) => m.utilityType === 'ELECTRICITY');
@@ -152,7 +201,36 @@ if (socialRule && purchaseRows.length > 0) {
           {properties.length > 0 && (
             <MeterForm properties={properties.map((p) => ({ id: p.id, name: p.name }))} />
           )}
+          {properties.length > 0 && (
+            <BudgetForm
+              properties={properties.map((p) => ({ id: p.id, name: p.name }))}
+              existingCategories={budgets.map((b) => b.category)}
+            />
+          )}
         </div>
+
+        {/* Budgets enregistrés — flow.md §24 et §30 */}
+        {budgets.length > 0 && (
+          <Card className="mt-5 p-0">
+            <div className="p-5 pb-0">
+              <h2 className="font-semibold">Mes budgets mensuels</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Des objectifs que vous fixez, à comparer avec vos factures réelles.
+              </p>
+            </div>
+            <ul className="mt-4 divide-y divide-gray-100">
+              {budgets.map((b) => (
+                <BudgetRow
+                  key={b.id}
+                  id={b.id}
+                  category={b.category}
+                  monthlyAmount={b.monthlyAmount}
+                  spentAmount={b.spentAmount}
+                />
+              ))}
+            </ul>
+          </Card>
+        )}
 
         {/* Sources tarifaires — flow.md §50 */}
         <Card className="mt-5 p-5">
@@ -231,10 +309,10 @@ if (socialRule && purchaseRows.length > 0) {
         <Card className="mt-5 flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
             <h2 className="font-semibold">
-              Formule {userPlan?.plan === 'PREMIUM' ? 'Premium' : 'Gratuite'}
+              Formule {account?.plan === 'PREMIUM' ? 'Premium' : 'Gratuite'}
             </h2>
             <p className="mt-1 text-sm text-gray-500">
-              {userPlan?.plan === 'PREMIUM'
+              {account?.plan === 'PREMIUM'
                 ? 'Historique illimité et projections 90 jours.'
                 : '1 logement, 2 compteurs, 3 mois d’historique.'}
             </p>
@@ -246,6 +324,15 @@ if (socialRule && purchaseRows.length > 0) {
             Voir les formules
           </a>
         </Card>
+
+        {/* Profil — flow.md §38 */}
+        <div className="mt-5">
+          <ProfileForm
+            phone={account?.phone ?? session.phone}
+            firstName={account?.firstName ?? null}
+            lastName={account?.lastName ?? null}
+          />
+        </div>
 
         <div className="mt-5">
           <LogoutButton />

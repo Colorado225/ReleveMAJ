@@ -132,10 +132,21 @@ export default async function DashboardPage() {
 
         {/* Alertes — flow.md §30 */}
         {data.alerts.length > 0 && (
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {data.alerts.map((a) => (
-              <AlertCard key={a.type} title={a.title} body={a.body} severity={a.severity} />
-            ))}
+          <div className="mt-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              {data.alerts.map((a) => (
+                <AlertCard key={a.type} title={a.title} body={a.body} severity={a.severity} />
+              ))}
+            </div>
+            {/* flow.md §33 — le dashboard montre, la page /alertes permet de
+                TRAITER : résoudre, rouvrir, supprimer. Un constat affiché sans
+                action possible n'est qu'un rappel qu'on ne peut pas éteindre. */}
+            <a
+              href="/alertes"
+              className="mt-3 inline-flex items-center gap-1 text-sm text-gray-600 underline-offset-2 hover:text-gray-900 hover:underline"
+            >
+              Gérer mes alertes
+            </a>
           </div>
         )}
 {/* Eau + méthode */}

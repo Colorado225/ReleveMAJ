@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatCivPhone, isCivPhoneComplete, normalizeCivPhone } from './phone';
 import {
+  budgetSchema,
   createApplianceSchema,
   createMeterSchema,
   createPropertySchema,
@@ -10,6 +11,9 @@ import {
   createReadingSchema,
   createWaterBillSchema,
   requestOtpSchema,
+  updateApplianceSchema,
+  updateBudgetSchema,
+  updateProfileSchema,
   verifyOtpSchema,
 } from './validation';
 
@@ -242,4 +246,90 @@ test('Téléphone : l’affichage du numéro reste lisible', () => {
   assert.equal(formatCivPhone('0700000000'), '+225 07 00 00 00 00');
   // une longueur inattendue est renvoyée telle quelle plutôt que tronquée
   assert.equal(formatCivPhone('+2250700'), '+2250700');
+// ---------- Appareils (flow.md §32) ----------
+test('appareil : la modification refuse un rattachement de logement', () => {
+  // Le rattachement détermine le périmètre de l'estimation du logement : le
+  // déplacer depuis le formulaire de modification serait une faute de données.
+  const r = updateApplianceSchema.safeParse({
+    propertyId: 'logement-1',
+    type: 'AC',
+    label: 'Climatisation',
+    powerWatts: 1200,
+    hoursPerDay: 6,
+    daysPerMonth: 30,
+  });
+  assert.equal(r.success, true);
+  // Zod retire les clés inconnues : `propertyId` n'est pas retenu.
+  assert.equal('propertyId' in r.data!, false);
+});
+
+test('appareil : les bornes de durée restent celles de la création', () => {
+  const base = { type: 'TV', label: 'Téléviseur', powerWatts: 100, hoursPerDay: 4, daysPerMonth: 30 };
+  assert.equal(updateApplianceSchema.safeParse({ ...base, hoursPerDay: 25 }).success, false);
+  assert.equal(updateApplianceSchema.safeParse({ ...base, daysPerMonth: 32 }).success, false);
+  assert.equal(updateApplianceSchema.safeParse({ ...base, powerWatts: 0 }).success, false);
+  assert.equal(updateApplianceSchema.safeParse(base).success, true);
+});
+
+// ---------- Budgets (flow.md §24 et §30) ----------
+test('budget : les trois postes du ménage sont acceptés', () => {
+  for (const category of ['ELECTRICITY', 'WATER', 'WASTE']) {
+    const r = budgetSchema.safeParse({ propertyId: 'p1', category, monthlyAmount: 35_000 });
+    assert.equal(r.success, true, category);
+  }
+});
+
+test('budget : une catégorie libre est refusée', () => {
+  // Une catégorie hors liste fermée produirait des budgets non additionnables.
+  const r = budgetSchema.safeParse({ propertyId: 'p1', category: 'CARBURANT', monthlyAmount: 10_000 });
+  assert.equal(r.success, false);
+  assert.match(issueOf(r), /Catégorie de budget inconnue/);
+});
+
+test('budget : montant négatif ou aberrant refusé', () => {
+  assert.equal(
+    budgetSchema.safeParse({ propertyId: 'p1', category: 'WATER', monthlyAmount: -1 }).success,
+    false,
+  );
+  // Un budget à 100 000 000 FCFA est un oubli de saisie, pas un objectif.
+  assert.equal(
+    budgetSchema.safeParse({ propertyId: 'p1', category: 'WATER', monthlyAmount: 100_000_000 }).success,
+    false,
+  );
+});
+
+test('budget : un budget de 0 FCFA est accepté (enveloppe suspendue)', () => {
+  assert.equal(budgetSchema.safeParse({ propertyId: 'p1', category: 'WASTE', monthlyAmount: 0 }).success, true);
+});
+
+test('budget : la modification ne porte que sur le montant', () => {
+  // La catégorie EST le budget : la changer via PATCH réécrirait l'historique.
+  const r = updateBudgetSchema.safeParse({ monthlyAmount: 40_000 });
+  assert.equal(r.success, true);
+  assert.deepEqual(Object.keys(r.data!).sort(), ['monthlyAmount']);
+
+  const avecCategorie = updateBudgetSchema.safeParse({ monthlyAmount: 40_000, category: 'WATER' });
+  assert.equal('category' in avecCategorie.data!, false);
+  // Ni logement : un budget reste attaché à son logement d'origine.
+  assert.equal('propertyId' in avecCategorie.data!, false);
+});
+
+// ---------- Profil (flow.md §38) ----------
+test('profil : prénom et nom sont acceptés, champ vide compris', () => {
+  assert.equal(updateProfileSchema.safeParse({ firstName: 'Awa', lastName: 'Koffi' }).success, true);
+  // Un champ effacé est envoyé vide : l'action le transforme en null.
+  assert.equal(updateProfileSchema.safeParse({ firstName: '', lastName: '' }).success, true);
+});
+
+test('profil : le téléphone et le palier ne sont pas modifiables', () => {
+  const r = updateProfileSchema.safeParse({ phone: '+2250700000001', plan: 'PREMIUM' });
+  assert.equal(r.success, true);
+  // Zod retire les clés inconnues : ni le téléphone ni le palier ne sont acceptés.
+  assert.equal('phone' in r.data!, false);
+  assert.equal('plan' in r.data!, false);
+});
+
+test('profil : un prénom absurdement long est refusé', () => {
+  assert.equal(updateProfileSchema.safeParse({ firstName: 'a'.repeat(200) }).success, false);
+});
 });

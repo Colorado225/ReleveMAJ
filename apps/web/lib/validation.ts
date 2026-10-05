@@ -121,11 +121,23 @@ export const verifyOtpSchema = z.object({
 export const updatePropertySchema = createPropertySchema;
 
 /**
+ * Modification PARTIELLE d'un logement — réservée à `PATCH /api/v1/properties/:id`.
+ *
+ * Un `PATCH` ne contient que les champs modifiés ; exiger la ligne entière
+ * obligerait un client à relire, puis renvoyer, des valeurs qu'il ne touche pas.
+ * Les mêmes bornes restent appliquées à chaque champ fourni.
+ */
+export const patchPropertySchema = createPropertySchema.partial();
+
+/**
  * Modification d'un compteur.
  * `propertyId` n'est pas modifiable : un compteur appartient à un logement
  * (flow.md §32) et le déplacer casserait l'historique rattaché.
  */
 export const updateMeterSchema = createMeterSchema;
+
+/** Modification partielle d'un compteur — réservée à `PATCH /api/v1/meters/:id`. */
+export const patchMeterSchema = createMeterSchema.partial();
 
 /**
  * ⚠ PAS de `updateReadingSchema`, volontairement (flow.md §21).
@@ -139,5 +151,87 @@ export const updateMeterSchema = createMeterSchema;
 /** Modification d'une recharge CIE (flow.md §35). */
 export const updatePurchaseSchema = createPurchaseSchema;
 
+/** Modification partielle d'une recharge — réservée à `PATCH`. */
+export const patchPurchaseSchema = createPurchaseSchema.partial();
+
 /** Modification d'une facture SODECI (flow.md §22). */
 export const updateWaterBillSchema = createWaterBillSchema;
+
+/** Modification partielle d'une facture — réservée à `PATCH`. */
+export const patchWaterBillSchema = createWaterBillSchema.partial();
+
+/**
+ * Modification d'un appareil (flow.md §32).
+ *
+ * `propertyId` est retiré : un appareil appartient à un logement et le déplacer
+ * changerait le périmètre de l'estimation de tout le logement. On modifie les
+ * caractéristiques de l'appareil, pas son rattachement — même règle que pour
+ * le compteur (`updateMeterSchema`).
+ */
+export const updateApplianceSchema = createApplianceSchema.omit({ propertyId: true });
+
+export type UpdateApplianceInput = z.infer<typeof updateApplianceSchema>;
+
+/**
+ * Modification PARTIELLE d'un appareil — réservée à `PATCH /api/v1/appliances/:id`.
+ *
+ * `updateApplianceSchema` exige tous les champs : c'est le bon contrat pour le
+ * formulaire web, qui renvoie la ligne entière. Un `PATCH` reçu par une API,
+ * lui, ne contient que les champs réellement modifiés : sans cela, corriger une
+ * seule puissance serait refusé faute de `type` et de `label`.
+ *
+ * `.partial()` conserve les mêmes bornes qu'à la création — un `PATCH` ne peut
+ * pas valider moins qu'un formulaire complet.
+ */
+export const patchApplianceSchema = updateApplianceSchema.partial();
+
+export type PatchApplianceInput = z.infer<typeof patchApplianceSchema>;
+
+/**
+ * Budget mensuel — flow.md §24 et §30.
+ *
+ * C'est un ENVELOPPE que l'utilisateur compare à sa facture, pas une donnée
+ * réglementaire : aucune source n'est exigée, contrairement aux tarifs.
+ *
+ * La catégorie est une liste fermée pour que le budget reste comparable d'un
+ * logement à l'autre. Une catégorie libre produirait des budgets qu'on ne peut
+ * jamais agréger.
+ */
+export const BUDGET_CATEGORIES = ['ELECTRICITY', 'WATER', 'WASTE'] as const;
+
+export const budgetSchema = z.object({
+  propertyId: z.string().min(1, 'Sélectionnez un logement.'),
+  category: z.enum(BUDGET_CATEGORIES, {
+    errorMap: () => ({ message: 'Catégorie de budget inconnue.' }),
+  }),
+  monthlyAmount: z
+    .number()
+    .min(0, 'Le budget ne peut pas être négatif.')
+    .max(10_000_000, 'Budget inattendu — vérifiez le montant.'),
+});
+
+export type BudgetInput = z.infer<typeof budgetSchema>;
+
+/**
+ * Modification d'un budget : seul le montant change.
+ *
+ * La catégorie EST le budget : en changer reviendrait à supprimer l'ancien et
+ * en créer un autre, ce que l'interface propose déjà explicitement.
+ */
+export const updateBudgetSchema = budgetSchema.omit({ propertyId: true, category: true });
+
+export type UpdateBudgetInput = z.infer<typeof updateBudgetSchema>;
+
+/**
+ * Profil utilisateur — flow.md §38 (`GET /api/v1/me`).
+ *
+ * Le téléphone et le palier ne sont PAS modifiables ici : le téléphone est
+ * l'identifiant de connexion (le changer exige une vérification OTP), et le
+ * palier relève de la facturation.
+ */
+export const updateProfileSchema = z.object({
+  firstName: z.string().max(60, 'Prénom trop long.').optional(),
+  lastName: z.string().max(60, 'Nom trop long.').optional(),
+});
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

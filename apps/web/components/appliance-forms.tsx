@@ -2,7 +2,8 @@
 
 import { useActionState } from 'react';
 import { APPLIANCE_LABELS, type ApplianceEstimate, type ApplianceType } from '@conso-ci/tariff-engine';
-import { createApplianceAction, deleteApplianceAction } from '@/lib/data-actions';
+import { createApplianceAction, deleteApplianceAction, updateApplianceAction } from '@/lib/data-actions';
+import { DeleteControl, EditControl } from './entity-actions';
 import { Button, Input, Label, Progress } from './ui';
 import { SelectField } from './form-fields';
 
@@ -22,10 +23,8 @@ export function ApplianceRow({
   costLabel: string | null;
   costKnown: boolean;
 }) {
-  const [message, action, pending] = useActionState(deleteApplianceAction, null);
-
   return (
-    <li className="flex items-center justify-between gap-4 p-4">
+    <li className="flex items-start justify-between gap-4 p-4">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <p className="truncate text-sm font-medium">{appliance.label}</p>
@@ -42,33 +41,134 @@ export function ApplianceRow({
           </div>
           <span className="text-xs text-gray-500">{appliance.sharePercent} %</span>
         </div>
+
+        <ApplianceEditForm
+          id={appliance.id}
+          type={appliance.type}
+          label={appliance.label}
+          powerWatts={appliance.powerWatts}
+          hoursPerDay={appliance.hoursPerDay}
+          daysPerMonth={appliance.daysPerMonth}
+        />
       </div>
 
       <div className="shrink-0 text-right">
         <p className="text-sm font-semibold">{appliance.monthlyKwh} kWh</p>
         {costKnown && costLabel && <p className="text-xs text-gray-500">≈ {costLabel}</p>}
-        <form action={action} className="mt-1">
-          <input type="hidden" name="id" value={appliance.id} />
-          <button
-            type="submit"
-            disabled={pending}
-            aria-label={`Supprimer ${appliance.label}`}
-            className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 disabled:opacity-50"
-          >
-            <Trash2Icon />
-            {message ? message : 'Supprimer'}
-          </button>
-        </form>
+        <ApplianceDeleteControl id={appliance.id} label={appliance.label} />
       </div>
     </li>
   );
 }
 
-function Trash2Icon() {
+/**
+ * Suppression d'un appareil.
+ *
+ * On réutilise `DeleteControl` (boîte de dialogue de confirmation) au lieu du
+ * bouton direct qu'utilisait la version précédente : la suppression d'un appareil
+ * fait disparaître son poids de la répartition du logement, et une erreur de
+ * clic n'a pas de retour. Le coût est un clic de plus.
+ */
+function ApplianceDeleteControl({ id, label }: { id: string; label: string }) {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
-    </svg>
+    <DeleteControl
+      id={id}
+      action={deleteApplianceAction}
+      entityLabel={`l’appareil « ${label} »`}
+      cascadeWarning="Son poids sera retiré de la répartition estimée du logement."
+    />
+  );
+}
+
+/**
+ * Modification d'un appareil — flow.md §32.
+ *
+ * Une estimation se corrige sans conséquence : le moteur recalcule la
+ * répartition à chaque affichage. Le formulaire est donc repris tel quel dans
+ * `EditControl`, sous la ligne, pour voir la valeur et sa correction ensemble.
+ */
+function ApplianceEditForm({
+  id,
+  type,
+  label,
+  powerWatts,
+  hoursPerDay,
+  daysPerMonth,
+}: {
+  id: string;
+  type: string;
+  label: string;
+  powerWatts: number;
+  hoursPerDay: number;
+  daysPerMonth: number;
+}) {
+  const [message, action, pending] = useActionState(updateApplianceAction, null);
+
+  return (
+    <EditControl label={`Modifier l’appareil ${label}`}>
+      <form action={action} className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
+        <input type="hidden" name="id" value={id} />
+
+        <SelectField
+          name="type"
+          label="Type"
+          defaultValue={type}
+          options={TYPE_OPTIONS.map(([value, optionLabel]) => ({ value, label: optionLabel }))}
+        />
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`label-${id}`}>Nom</Label>
+          <Input id={`label-${id}`} name="label" required defaultValue={label} />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`power-${id}`}>Puissance (W)</Label>
+            <Input
+              id={`power-${id}`}
+              name="powerWatts"
+              type="number"
+              required
+              min="1"
+              step="1"
+              defaultValue={powerWatts}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`hours-${id}`}>Heures / jour</Label>
+            <Input
+              id={`hours-${id}`}
+              name="hoursPerDay"
+              type="number"
+              required
+              min="0"
+              max="24"
+              step="0.5"
+              defaultValue={hoursPerDay}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`days-${id}`}>Jours / mois</Label>
+            <Input
+              id={`days-${id}`}
+              name="daysPerMonth"
+              type="number"
+              required
+              min="1"
+              max="31"
+              step="1"
+              defaultValue={daysPerMonth}
+            />
+          </div>
+        </div>
+
+        {message && <p className="text-xs text-red-600">{message}</p>}
+
+        <Button type="submit" disabled={pending} className="w-fit">
+          {pending ? 'Enregistrement…' : 'Enregistrer'}
+        </Button>
+      </form>
+    </EditControl>
   );
 }
 

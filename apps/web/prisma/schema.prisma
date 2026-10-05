@@ -436,6 +436,10 @@ model Alert {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // flow.md §33 — une seule ligne par type d'alerte et par utilisateur : les
+  // alertes sont recalculées à chaque appel, c'est ce couple qui permet de
+  // savoir qu'un constat a déjà été traité sans dupliquer la ligne.
+  @@unique([userId, type])
   @@index([userId, resolvedAt, createdAt])
 }
 
