@@ -7,6 +7,7 @@ import { db } from '@/lib/db';
 import { authenticate, fail, guardRateLimit, notFound, ok, parse, readJson, unauthorized } from '@/lib/api';
 import { audit } from '@/lib/audit';
 import { patchMeterSchema } from '@/lib/validation';
+import { checkMeterIdentityChange, meterHasHistory } from '@/lib/meter-identity';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -18,7 +19,9 @@ export async function PATCH(request: Request, { params }: Ctx) {
 
   const meter = await db.meter.findFirst({
     where: { id, property: { userId: session.id } },
-    select: { id: true },
+    // instr.md §11 — `provider` et `utilityType` sont lus pour comparer la
+    // demande à l'identité enregistrée du compteur.
+    select: { id: true, provider: true, utilityType: true },
   });
   if (!meter) return notFound('Compteur introuvable.');
 
@@ -32,6 +35,24 @@ export async function PATCH(request: Request, { params }: Ctx) {
   if (!body.success) return fail(body.error.error, 422, body.error.field);
 
   if (Object.keys(body.data).length === 0) return fail('Aucun champ à modifier.', 422);
+
+  // instr.md §11 — `provider` et `utilityType` décrivent le même réseau, et
+  // faire passer un compteur d'eau en électricité rendrait ses relevés
+  // incohérents avec lui. Refusé dès qu'une donnée existe, pas seulement quand
+  // le type change : une facture SODECI est un document financier, même sans
+  // aucun relevé d'index.
+  if ('provider' in body.data || 'utilityType' in body.data) {
+    const aDesDonnees = await meterHasHistory(id);
+    const refus = checkMeterIdentityChange({
+      actuel: { provider: meter.provider, utilityType: meter.utilityType },
+      demande: {
+        provider: body.data.provider,
+        utilityType: body.data.utilityType,
+      },
+      aDesDonnees,
+    });
+    if (refus) return fail(refus, 422);
+  }
 
   // flow.md §9 — l'unité suit le type : la laisser sans lien avec lui rendrait
   // les données incohérentes (un compteur d'eau qui stocke des kWh). On ne la

@@ -21,6 +21,7 @@ import {
   updateWaterBillSchema,
 } from './validation';
 import { reverseEstimate } from '@conso-ci/tariff-engine';
+import { checkMeterIdentityChange, checkMeterCoherence, meterHasHistory } from './meter-identity';
 import { deleteUploadedFile, saveReceipt } from './upload';
 import { audit } from './audit';
 import { track } from './analytics';
@@ -62,8 +63,14 @@ async function ownedProperty(id: string, userId: string) {
   return db.property.findFirst({ where: { id, userId }, select: { id: true } });
 }
 
+// instr.md §11 — `provider` et `utilityType` sont sélectionnés pour vérifier
+  // que la modification demandée ne réécrit pas l'identité d'un compteur déjà
+  // qu'une mesure. À `id` seul, la comparaison serait impossible.
 async function ownedMeter(id: string, userId: string) {
-  return db.meter.findFirst({ where: { id, property: { userId } }, select: { id: true } });
+  return db.meter.findFirst({
+    where: { id, property: { userId } },
+    select: { id: true, provider: true, utilityType: true },
+  });
 }
 
 async function ownedAppliance(id: string, userId: string) {
@@ -218,6 +225,15 @@ export async function createMeterAction(
   });
   if (!parsed.success) return firstIssue(parsed.error);
 
+  // instr.md §11 — le réseau est déterminé par le type. Sans ce contrôle, un
+  // compteur « CIE » en eau était enregistrable, incohérent dès sa création et
+  // impossible à rattraper ensuite puisque `provider` ne bouge plus.
+  const incoherent = checkMeterCoherence({
+    provider: parsed.data.provider,
+    utilityType: parsed.data.utilityType,
+  });
+  if (incoherent) return incoherent;
+
   // flow.md §47 — quota de compteurs.
   //
   // Comptage et création dans UNE transaction verrouillée : deux envois
@@ -288,6 +304,16 @@ export async function updateMeterAction(
     label: formData.get('label') || undefined,
   });
   if (!parsed.success) return firstIssue(parsed.error);
+
+  // instr.md §11 — même règle que `PATCH /api/v1/meters/:id`, appliquée ici
+  // aussi : les deux chemins d'écriture passent par la même fonction, sinon la
+  // restriction ne tiendrait que pour l'API.
+  const refus = checkMeterIdentityChange({
+    actuel: { provider: meter.provider, utilityType: meter.utilityType },
+    demande: { provider: parsed.data.provider, utilityType: parsed.data.utilityType },
+    aDesDonnees: await meterHasHistory(meter.id),
+  });
+  if (refus) return refus;
 
   await db.meter.update({
     where: { id: meter.id },

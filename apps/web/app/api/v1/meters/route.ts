@@ -5,6 +5,7 @@ import { audit } from '@/lib/audit';
 import { track } from '@/lib/analytics';
 import { createWithinQuota, type PlanName } from '@/lib/plans';
 import { createMeterSchema } from '@/lib/validation';
+import { checkMeterCoherence } from '@/lib/meter-identity';
 
 type MeterRow = {
   id: string;
@@ -72,6 +73,15 @@ export async function POST(request: Request) {
 
   const body = parse(createMeterSchema, raw);
   if (!body.success) return fail(body.error.error, 422, body.error.field);
+
+  // instr.md §11 — même cohérence réseau/type que la Server Action : un
+  // compteur « CIE » en eau serait incohérent dès sa création, et impossible à
+  // rattraper ensuite puisque `provider` ne bouge plus.
+  const incoherent = checkMeterCoherence({
+    provider: body.data.provider,
+    utilityType: body.data.utilityType,
+  });
+  if (incoherent) return fail(incoherent, 422);
 
   // flow.md §47 — quota FREE : porte sur le volume, pas sur la compréhension.
   //
