@@ -5,6 +5,7 @@
 import { fail, guardRateLimit, ok } from '@/lib/api';
 import { rotateSession } from '@/lib/sessions';
 import { REFRESH_TOKEN_TTL_SECONDS } from '@/lib/auth-core';
+import { resolveClientIp } from '@/lib/client-ip';
 
 export async function POST(request: Request) {
   const limited = await guardRateLimit(request, 'auth:refresh', 30, 60 * 60 * 1000);
@@ -27,10 +28,7 @@ export async function POST(request: Request) {
 
   const result = await rotateSession(decodeURIComponent(token), {
     userAgent: request.headers.get('user-agent'),
-    ip:
-      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-      request.headers.get('x-real-ip') ??
-      null,
+    ip: resolveClientIp(request.headers).ip,
   });
 
   if (!result.ok) {

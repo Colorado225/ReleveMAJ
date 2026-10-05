@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { verifyAccessToken, type SessionUser } from './auth-core';
 import { checkRateLimit, purgeExpiredRateLimits } from './rate-limit';
+import { rateLimitKey } from './client-ip';
 
 export type ApiError = { error: string; field?: string };
 
@@ -54,15 +55,10 @@ export async function authenticate(request: Request): Promise<SessionUser | null
 
 /** Limitation de débit appliquée aux endpoints d'écriture. */
 export async function guardRateLimit(request: Request, scope: string, limit: number, windowMs: number) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    request.headers.get('x-real-ip') ??
-    'inconnu';
-
   // purification best-effort : la table RateLimit grossit à chaque appel
   await purgeExpiredRateLimits().catch(() => undefined);
 
-  return checkRateLimit(`api:${scope}:${ip}`, limit, windowMs);
+  return checkRateLimit(rateLimitKey(request.headers, scope), limit, windowMs);
 }
 
 export function firstIssue(error: { issues: { message: string; path?: (string | number)[] }[] }): ApiError {

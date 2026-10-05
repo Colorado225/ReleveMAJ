@@ -6,6 +6,7 @@ import { audit } from '@/lib/audit';
 import { track } from '@/lib/analytics';
 import { verifyOtpSchema } from '@/lib/validation';
 import { fail, guardRateLimit, ok, parse, parseBody, unauthorized } from '@/lib/api';
+import { resolveClientIp } from '@/lib/client-ip';
 
 const MAX_ATTEMPTS = 5;
 const VERIFY_LIMIT = 10; // 10 vérifications par IP par heure
@@ -70,10 +71,9 @@ export async function POST(request: Request) {
       userId: user.id,
       refreshTokenHash: hashRefreshToken(refreshJti),
       expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000),
-      ip:
-        request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-        request.headers.get('x-real-ip') ??
-        null,
+      // §19 — une IP non établie vaut mieux qu'une IP forgée : elle est absente
+      // de l'audit plutôt que fausse.
+      ip: resolveClientIp(request.headers).ip,
       userAgent: request.headers.get('user-agent'),
     },
   });

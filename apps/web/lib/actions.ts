@@ -7,6 +7,7 @@ import { db } from './db';
 import { createSession, destroySession } from './auth';
 import { hashOtpCode, otpCodeMatches } from './auth-core';
 import { checkRateLimit, purgeExpiredRateLimits } from './rate-limit';
+import { rateLimitKey } from './client-ip';
 import { deliverOtp } from './sms';
 import { audit } from './audit';
 import { requestOtpSchema, verifyOtpSchema } from './validation';
@@ -25,7 +26,8 @@ function hashCode(phone: string, code: string): string {
 
 async function clientIp(): Promise<string> {
   const h = await headers();
-  return h.get('x-forwarded-for')?.split(',')[0]?.trim() || h.get('x-real-ip') || 'inconnu';
+  // §19 — la clé du quota ne se forge plus avec un `x-forwarded-for`.
+  return rateLimitKey(h, 'otp');
 }
 
 /**
